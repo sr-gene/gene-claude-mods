@@ -636,8 +636,11 @@ test('a turn that ends with background work still running is not your turn: the 
   expect(w.phase()).toBe('background')
   expect(w.status.at(-1)).toBe('steps: waiting on background work')
 
-  // Nothing left in flight: the move is the person's after all.
-  await $.classic.Stop({ stop_hook_active: false, background_tasks: [{ id: 'bg1', type: 'shell', status: 'completed', description: 'Generate take A' }] })
+  // Nothing left in flight: the move is the person's after all. A running artifact watch ("monitor") is not work in flight.
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [
+    { id: 'bg1', type: 'shell', status: 'completed', description: 'Generate take A' },
+    { id: 'mon1', type: 'monitor', status: 'running', description: 'live updates for artifact https://claude.ai/artifact/x (auto-armed on publish)' },
+  ] })
   expect(w.phase()).toBe('yours')
 
   // An interrupted turn is the person's move whatever runs in the background.

@@ -169,6 +169,10 @@ const isPersonsMove = (now: Phase) => now === 'yours' || now === 'waiting'
 /** Background task statuses that still count as in flight. */
 const IN_FLIGHT = new Set(['running', 'pending', 'backgrounded', 'waiting'])
 
+/** Task types that are watchers, not work: an artifact watch ("monitor", auto-armed on publish) runs for the rest of the
+ * session and never hands Claude a result the person is waiting for, so it must not keep the panel on "waiting on jobs". */
+const WATCHERS = new Set(['monitor'])
+
 /** The "Now" line while the turn has ended but background work will wake Claude. */
 function backgroundText(tasks: PendingTask[]): string {
   const n = tasks.length
@@ -178,7 +182,7 @@ function backgroundText(tasks: PendingTask[]): string {
 /** What the Stop hook lists as still running, in the mod's own shape. */
 function pendingOf(tasks: ReadonlyArray<{ id: string; type: string; status: string; description: string }> | undefined): PendingTask[] {
   return (tasks ?? [])
-    .filter(t => IN_FLIGHT.has(String(t.status)))
+    .filter(t => IN_FLIGHT.has(String(t.status)) && !WATCHERS.has(String(t.type)))
     .map(t => ({ id: String(t.id), type: String(t.type), description: String(t.description ?? '').slice(0, 120) }))
 }
 
