@@ -87,7 +87,7 @@ Since 2026-10-15 the `gene-claude-mods` marketplace is registered at user scope 
 1. `claude plugin validate plugins/<mod>` and `claude plugin test plugins/<mod>` pass;
 2. the mod's version is bumped in both `plugins/<mod>/.claude-plugin/plugin.json` and its `marketplace.json` entry (the cache is keyed by version);
 3. the commit is pushed;
-4. `claude plugin marketplace update gene-claude-mods` re-pulls the clone (reinstall the mod with `claude plugin install <mod>@gene-claude-mods --scope user` if `claude plugin list` still shows the old version);
+4. `claude plugin marketplace update gene-claude-mods` re-pulls the clone, then `claude plugin update <mod>@gene-claude-mods` installs the new version (`install` only reports that a newer one is offered; verified 2026-10-20);
 5. `/reload-plugins` in a running session.
 
 To try a change before pushing, use hot reload (below) or `claude --plugin-dir plugins/<mod>`.
