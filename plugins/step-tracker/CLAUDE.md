@@ -10,6 +10,10 @@ A live `Steps` panel in the band above the prompt (`AbovePrompt`; `/steps pane` 
 
 Added 2026-10-16: the user could not tell from the frame that Claude had stopped and a step needed them (an open `in_progress` step looked as if it was still running). `phase` gains `yours` (set at the main loop's `turn.complete`, with `endReason` from `e.reason`; `turn.start` clears both) and `waiting` (while a main-loop `AskUserQuestion`/`ExitPlanMode` call runs, `ASK_TOOLS`). `idle` now means only "no turn yet". While `isPersonsMove`: frame `warning` (`success` when `yours` with no open step), header `· your turn`, the `in_progress` step drawn `⏸` with `waiting for you` instead of its activeForm, and the Now line from `yourTurnText()`. A turn with no steps and no history still draws no band. Permission dialogs are not detected: `tool.check`'s `ask` cannot tell a dialog from the auto-mode classifier.
 
+## Waiting on background work
+
+Added 2026-10-20: a turn that ended while a backgrounded Bash command (`run_in_background`) was still generating showed `your turn`, though the command's notification was going to wake Claude and the person had nothing to do. `phase` gains `background`: the classic `Stop` hook's `background_tasks` (statuses running/pending/backgrounded/waiting, `pendingOf`) is kept in the `pending` atom, and the main loop's `turn.complete` with `reason === 'answer'` sets `background` instead of `yours` when it is non-empty. The two events may come in either order, so `classic.Stop` also flips an already-set `yours` to `background` (and `background` back to `yours` when nothing is left in flight); `turn.start` empties `pending`, which is also how the wake-up notification's turn ends the state. An aborted turn is `yours` whatever runs. Drawn in Claude's colour (not a call for the person): header `· waiting on jobs`, each task a `⏳ type: description` row under Now, the open step `waiting on background work · <activeForm>…`, status line `waiting on background work`.
+
 ## Tests
 
 `tests/tracker.test.ts` holds the `world()` helper and `callAny` referred to in the root `CLAUDE.md`'s test-kit notes.

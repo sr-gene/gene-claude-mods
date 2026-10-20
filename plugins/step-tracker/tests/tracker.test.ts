@@ -594,3 +594,55 @@ test('a short prompt that fits the header row gets no [more] button', async ($, 
     await narrow.unmount()
   }
 })
+
+test('a turn that ends with background work still running is not your turn: the Stop hook lists it', async ($, on) => {
+  const w = world(on)
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_$, e) => ({ text: e.answer }))
+  on('classic.Stop', () => ({}))
+  const running = [{ id: 'bg1', type: 'shell', status: 'running', description: 'Generate take A', command: 'python gen-one.py' }]
+
+  await $.turn.start({ text: 'make the clip', turnId: 'bg-1' })
+  await callAny($, {
+    tool: 'mcp__step-tracker__plan',
+    steps: [{ title: 'Generate', activeForm: 'Generating the clip' }, { title: 'Cut stills' }],
+  })
+  await callAny($, { tool: 'mcp__step-tracker__step', index: 1, status: 'in_progress' })
+
+  // Stop before turn.complete: the turn ends waiting on the job, not on the person.
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: running })
+  await $.turn.complete({ turnId: 'bg-1', answer: 'generating in the background', durationMs: 10, isAborted: false, reason: 'answer' })
+  expect(w.phase()).toBe('background')
+  expect(w.status.at(-1)).toBe('steps: 0/2 Generate · waiting on background work')
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface, ...BAND, props: { ...BAND.props, isWorking: false } })
+    expect(await ui.find({ type: 'Text', text: /your turn/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /· waiting on jobs/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /1 job running, Claude continues when it finishes/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /⏳ shell: Generate take A/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /▶ 1\. Generate/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /waiting on background work · Generating the clip/ })).toBeDefined()
+    await ui.unmount()
+  }
+
+  // The job's notification wakes Claude: a new turn, nothing pending.
+  await $.turn.start({ text: '', turnId: 'bg-2' })
+  expect(w.phase()).toBe('working')
+
+  // turn.complete before Stop: the same phase once the Stop hook has listed the job.
+  await $.turn.complete({ turnId: 'bg-2', answer: 'one more take', durationMs: 10, isAborted: false, reason: 'answer' })
+  expect(w.phase()).toBe('yours')
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [...running, { id: 'bg2', type: 'subagent', status: 'running', description: 'review it', agent_type: 'Explore' }] })
+  expect(w.phase()).toBe('background')
+  expect(w.status.at(-1)).toBe('steps: waiting on background work')
+
+  // Nothing left in flight: the move is the person's after all.
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [{ id: 'bg1', type: 'shell', status: 'completed', description: 'Generate take A' }] })
+  expect(w.phase()).toBe('yours')
+
+  // An interrupted turn is the person's move whatever runs in the background.
+  await $.turn.start({ text: 'again', turnId: 'bg-3' })
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: running })
+  await $.turn.complete({ turnId: 'bg-3', answer: '', durationMs: 10, isAborted: true, reason: 'aborted' })
+  expect(w.phase()).toBe('yours')
+})

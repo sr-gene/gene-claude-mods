@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, Register, RenderSurface } from 'claude-code'
 
-import type { Activity, AgentRun, EndReason, Job, Phase, Step } from '../types'
+import type { Activity, AgentRun, EndReason, Job, PendingTask, Phase, Step } from '../types'
 
 const PANE = 'steps'
 const HISTORY_PANE = 'steps-history'
@@ -16,6 +16,7 @@ const activity = atom({ plugin: 'step-tracker', key: 'activity' } as const, [])
 const agents = atom({ plugin: 'step-tracker', key: 'agents' } as const, [])
 const phase = atom({ plugin: 'step-tracker', key: 'phase' } as const, 'idle')
 const endReason = atom({ plugin: 'step-tracker', key: 'endReason' } as const, null as EndReason | null)
+const pending = atom({ plugin: 'step-tracker', key: 'pending' } as const, [] as PendingTask[])
 const isBandHidden = atom({ plugin: 'step-tracker', key: 'isBandHidden' } as const, false)
 const isPromptExpanded = atom({ plugin: 'step-tracker', key: 'isPromptExpanded' } as const, false)
 const viewIndex = atom({ plugin: 'step-tracker', key: 'viewIndex' } as const, null)
@@ -159,10 +160,27 @@ const PHASE_LABEL: Record<Phase, string> = {
   tool: 'calling a tool',
   waiting: 'waiting for your answer',
   yours: 'your turn',
+  background: 'waiting on background work',
 }
 
 /** Whether the move is the person's: the turn ended, or a tool waits on them. */
 const isPersonsMove = (now: Phase) => now === 'yours' || now === 'waiting'
+
+/** Background task statuses that still count as in flight. */
+const IN_FLIGHT = new Set(['running', 'pending', 'backgrounded', 'waiting'])
+
+/** The "Now" line while the turn has ended but background work will wake Claude. */
+function backgroundText(tasks: PendingTask[]): string {
+  const n = tasks.length
+  return `waiting on background work · ${n} job${n === 1 ? '' : 's'} running, Claude continues when ${n === 1 ? 'it' : 'they'} finish${n === 1 ? 'es' : ''}`
+}
+
+/** What the Stop hook lists as still running, in the mod's own shape. */
+function pendingOf(tasks: ReadonlyArray<{ id: string; type: string; status: string; description: string }> | undefined): PendingTask[] {
+  return (tasks ?? [])
+    .filter(t => IN_FLIGHT.has(String(t.status)))
+    .map(t => ({ id: String(t.id), type: String(t.type), description: String(t.description ?? '').slice(0, 120) }))
+}
 
 /** The "Now" line once the turn has ended: why it ended, and whether steps were left open. */
 function yourTurnText(reason: EndReason | null, open: number): string {
@@ -223,12 +241,15 @@ async function drawTracker($: EngineInterface, { Box, Text, Button }: Table, col
   const isExpanded = await read($, isPromptExpanded)
   const view = await read($, viewIndex)
   const reason = await read($, endReason)
+  const tasks = await read($, pending)
 
   // The person's move: the frame turns from Claude's colour to a call for them.
+  // Background work in flight is not: Claude's turn ended, its notification wakes him.
   const isYours = isPersonsMove(now)
+  const isBackground = now === 'background'
   const open = list.filter(s => s.status !== 'completed').length
   const frameColor = !isYours ? 'claude' : now === 'yours' && open === 0 ? 'success' : 'warning'
-  const nowText = now === 'yours' ? yourTurnText(reason, open) : PHASE_LABEL[now]
+  const nowText = now === 'yours' ? yourTurnText(reason, open) : isBackground ? backgroundText(tasks) : PHASE_LABEL[now]
 
   // The header is the live job, or the history job the arrows browse. A new job
   // starts with an empty list; earlier jobs are reached with the arrows alone.
@@ -261,6 +282,7 @@ async function drawTracker($: EngineInterface, { Box, Text, Button }: Table, col
           <Text bold dimColor={isPrevious}>{title}</Text>
           <Text dimColor>{countText}</Text>
           {isYours && !isPrevious && <Text bold color={frameColor}>{'  · your turn'}</Text>}
+          {isBackground && !isPrevious && <Text bold color="claude">{'  · waiting on jobs'}</Text>}
           {label !== '' && !isExpanded && <Text dimColor wrap="truncate-end">{'  · '}{label}</Text>}
           {hasMore && (
             <Button
@@ -311,7 +333,12 @@ async function drawTracker($: EngineInterface, { Box, Text, Button }: Table, col
               {'     '}waiting for you
             </Text>
           )}
-          {!isPrevious && step.status === 'in_progress' && !isYours && step.activeForm && (
+          {!isPrevious && step.status === 'in_progress' && isBackground && (
+            <Text dimColor wrap="truncate-end">
+              {'     '}waiting on background work{step.activeForm ? ` · ${step.activeForm}…` : ''}
+            </Text>
+          )}
+          {!isPrevious && step.status === 'in_progress' && !isYours && !isBackground && step.activeForm && (
             <Text dimColor wrap="truncate-end">
               {'     '}{step.activeForm}…
             </Text>
@@ -334,6 +361,12 @@ async function drawTracker($: EngineInterface, { Box, Text, Button }: Table, col
       {runs.map(run => (
         <Text wrap="truncate-end" color="claude">
           {'  '}⟳ {run.type}{run.description ? `: ${run.description}` : ''}
+        </Text>
+      ))}
+
+      {isBackground && tasks.map(t => (
+        <Text key={t.id} wrap="truncate-end" color="claude">
+          {'  '}⏳ {t.type}{t.description ? `: ${t.description}` : ''}
         </Text>
       ))}
 
@@ -710,8 +743,28 @@ export const register: Register = on => {
     await update($, agents, () => [])
     await update($, phase, () => 'working')
     await update($, endReason, () => null)
+    await update($, pending, () => [])
     await refreshStatus($)
 
+    return next(e)
+  })
+
+  // Background work still running at the end of a turn (a backgrounded shell
+  // command, a background subagent): the Stop hook lists it. Its notification
+  // wakes Claude, so the end of that turn is not the person's move. The Stop
+  // hook and turn.complete may come in either order: each reads what the other
+  // wrote, so the phase is the same whichever lands last.
+  on('classic.Stop', async ($, e, next) => {
+    if (e.agent_id) return next(e)
+    const tasks = pendingOf(e.background_tasks)
+    await update($, pending, () => tasks)
+    const reason = await read($, endReason)
+    if (tasks.length > 0 && reason === 'answer') {
+      await update($, phase, now => (now === 'yours' ? 'background' : now))
+    } else {
+      await update($, phase, now => (now === 'background' ? 'yours' : now))
+    }
+    await refreshStatus($)
     return next(e)
   })
 
@@ -721,7 +774,8 @@ export const register: Register = on => {
       await update($, agents, list => list.filter(a => a.id !== gone))
       return next(e)
     }
-    await update($, phase, () => 'yours')
+    const tasks = await read($, pending)
+    await update($, phase, () => (e.reason === 'answer' && tasks.length > 0 ? 'background' : 'yours'))
     await update($, endReason, () => e.reason)
     await update($, activity, list => list.map(a => (a.isDone ? a : { ...a, isDone: true })))
     await refreshStatus($)

@@ -27,9 +27,19 @@ export type AgentRun = {
 /**
  * What the main loop is doing. `idle` before any turn; `yours` once a turn
  * has ended (the person's move); `waiting` while a tool waits on the person
- * (AskUserQuestion, ExitPlanMode).
+ * (AskUserQuestion, ExitPlanMode); `background` once a turn has ended with
+ * background work (a backgrounded shell command, a background subagent) still
+ * running, whose notification will wake Claude: not the person's move.
  */
-export type Phase = 'idle' | 'working' | 'thinking' | 'writing' | 'tool' | 'waiting' | 'yours'
+export type Phase = 'idle' | 'working' | 'thinking' | 'writing' | 'tool' | 'waiting' | 'yours' | 'background'
+
+/** One background task still running when the last turn ended, as the Stop hook listed it. */
+export type PendingTask = {
+  id: string
+  /** `shell`, `subagent`, `monitor`, `workflow`, ... */
+  type: string
+  description: string
+}
 
 /** Why the last main-loop turn ended, for the "your turn" line. */
 export type EndReason = 'answer' | 'aborted' | 'refusal' | 'error'
@@ -55,6 +65,8 @@ declare module 'claude-code' {
       phase: Phase
       /** Why the last main-loop turn ended; null while one runs. */
       endReason: EndReason | null
+      /** Background work still running when the last turn ended (from the Stop hook); empty while a turn runs. */
+      pending: PendingTask[]
       isBandHidden: boolean
       /** Whether the header shows the whole prompt instead of its excerpt. */
       isPromptExpanded: boolean
